@@ -49,6 +49,18 @@ def parse_package(package_str):
         return price, months
     return None, None
 
+def calculate_due_date(original_date, months):
+    """Tính lại Due Date dựa vào số tháng của gói cước"""
+    if months == 2:
+        # Sim 2 tháng: chỉ dùng 60 ngày, không phải 90 ngày
+        # Giả sử original_date là ngày bắt đầu (cột NGAY)
+        # Cần trừ đi 30 ngày so với cột 89
+        new_due_date = original_date - timedelta(days=30)
+        return new_due_date
+    else:
+        # Sim 3 tháng: giữ nguyên
+        return original_date
+
 def check_reminders():
     try:
         print("🔄 Đang đọc dữ liệu từ Google Sheets...")
@@ -66,10 +78,10 @@ def check_reminders():
         today = datetime.now().date()
         print(f"📅 Hôm nay: {today}")
         
-        # Danh sách phân loại ĐÚNG
-        overdue = []      # QUÁ HẠN (due_date < today)
-        today_due = []    # HÔM NAY ĐẾN HẠN (due_date == today)
-        upcoming_7days = []  # SẮP ĐẾN HẠN (trong 7 ngày tới, chưa kể hôm nay)
+        # Danh sách phân loại
+        overdue = []        # QUÁ HẠN
+        today_due = []      # HÔM NAY ĐẾN HẠN
+        upcoming_7days = [] # SẮP ĐẾN HẠN (1-7 ngày)
         
         data_rows = lines[1:]
         
@@ -84,25 +96,36 @@ def check_reminders():
             try:
                 ten_kh = cols[7].strip() if len(cols) > 7 else ''
                 ngay_89_str = cols[2].strip() if len(cols) > 2 else ''
+                ngay_str = cols[1].strip() if len(cols) > 1 else ''  # Cột NGAY để tính lại cho sim 2 tháng
                 sdt_raw = cols[11].strip() if len(cols) > 11 else ''
                 goi_cuoc_raw = cols[12].strip() if len(cols) > 12 else ''
                 
                 if not ten_kh or not ngay_89_str:
                     continue
                 
-                due_date = parse_date(ngay_89_str)
-                if not due_date:
+                original_due_date = parse_date(ngay_89_str)
+                if not original_due_date:
                     continue
                 
+                start_date = parse_date(ngay_str) if ngay_str else None
                 phone = extract_phone(sdt_raw)
                 price, months = parse_package(goi_cuoc_raw)
+                
+                # === XỬ LÝ ĐẶC BIỆT CHO SIM 2 THÁNG ===
+                if months == 2 and start_date:
+                    # Sim 2 tháng: tính lại due_date = start_date + 60 ngày
+                    due_date = start_date + timedelta(days=60)
+                    sim_type = "SIM 2 THÁNG (60 NGÀY)"
+                    print(f"📌 {ten_kh}: Đã điều chỉnh ngày từ {original_due_date} -> {due_date} (sim 2 tháng)")
+                else:
+                    # Sim 3 tháng: giữ nguyên cột 89
+                    due_date = original_due_date
+                    sim_type = "SIM 3 THÁNG (90 NGÀY)"
                 
                 # Tính số ngày đến hạn
                 days_until_due = (due_date - today).days
                 
-                # === PHÂN LOẠI THEO NGÀY ===
-                
-                # 1. QUÁ HẠN (due_date < today)
+                # === PHÂN LOẠI ===
                 if days_until_due < 0:
                     overdue.append({
                         'name': ten_kh.upper(),
@@ -110,22 +133,21 @@ def check_reminders():
                         'due_date': due_date,
                         'days_overdue': abs(days_until_due),
                         'package': goi_cuoc_raw,
-                        'months': months
+                        'sim_type': sim_type,
+                        'original_date': original_due_date
                     })
-                    print(f"❌ QUÁ HẠN: {ten_kh} - {abs(days_until_due)} ngày")
+                    print(f"❌ QUÁ HẠN: {ten_kh} - {abs(days_until_due)} ngày (due: {due_date})")
                 
-                # 2. HÔM NAY ĐẾN HẠN (due_date == today)
                 elif days_until_due == 0:
                     today_due.append({
                         'name': ten_kh.upper(),
                         'phone': phone,
                         'due_date': due_date,
                         'package': goi_cuoc_raw,
-                        'months': months
+                        'sim_type': sim_type
                     })
-                    print(f"📅 HÔM NAY: {ten_kh}")
+                    print(f"📅 HÔM NAY: {ten_kh} (due: {due_date})")
                 
-                # 3. SẮP ĐẾN HẠN (1-7 ngày tới)
                 elif 1 <= days_until_due <= 7:
                     upcoming_7days.append({
                         'name': ten_kh.upper(),
@@ -133,9 +155,9 @@ def check_reminders():
                         'due_date': due_date,
                         'days_left': days_until_due,
                         'package': goi_cuoc_raw,
-                        'months': months
+                        'sim_type': sim_type
                     })
-                    print(f"⏰ Sắp đến hạn: {ten_kh} - còn {days_until_due} ngày")
+                    print(f"⏰ Sắp đến hạn: {ten_kh} - còn {days_until_due} ngày (due: {due_date})")
                 
             except Exception as e:
                 print(f"⚠️ Lỗi dòng {idx}: {e}")
@@ -146,7 +168,7 @@ def check_reminders():
         message += f"📅 {today.strftime('%d/%m/%Y')}\n"
         message += "━" * 35 + "\n\n"
         
-        # 1. QUÁ HẠN (quan trọng nhất)
+        # 1. QUÁ HẠN
         if overdue:
             message += "🚨 <b>QUÁ HẠN - CẦN XỬ LÝ NGAY</b> 🚨\n\n"
             for item in overdue:
@@ -154,10 +176,9 @@ def check_reminders():
                 message += f"   📱 {item['phone']}\n"
                 message += f"   📅 Hết hạn: {item['due_date']}\n"
                 message += f"   ⚠️ QUÁ HẠN {item['days_overdue']} NGÀY\n"
-                if item['months'] == 2:
-                    message += f"   📦 {item['package']} - SIM 2 THÁNG\n"
-                else:
-                    message += f"   📦 {item['package']}\n"
+                message += f"   📦 {item['package']} - {item['sim_type']}\n"
+                if 'original_date' in item and item['original_date'] != item['due_date']:
+                    message += f"   📍 (Đã điều chỉnh từ {item['original_date']})\n"
                 message += "\n"
         
         # 2. HÔM NAY ĐẾN HẠN
@@ -167,9 +188,9 @@ def check_reminders():
                 message += f"📌 <b>{item['name']}</b>\n"
                 message += f"   📱 {item['phone']}\n"
                 message += f"   📅 Đến hạn: {item['due_date']} - HÔM NAY\n"
-                message += f"   📦 {item['package']}\n\n"
+                message += f"   📦 {item['package']} - {item['sim_type']}\n\n"
         
-        # 3. SẮP ĐẾN HẠN (trong 7 ngày tới)
+        # 3. SẮP ĐẾN HẠN
         if upcoming_7days:
             message += "⏰ <b>CÔNG VIỆC SẮP ĐẾN HẠN (TRONG 7 NGÀY TỚI)</b> ⏰\n\n"
             for item in upcoming_7days:
@@ -177,21 +198,15 @@ def check_reminders():
                 message += f"   📱 {item['phone']}\n"
                 message += f"   📅 Đến hạn: {item['due_date']}\n"
                 message += f"   ⏰ Còn {item['days_left']} ngày\n"
-                if item['months'] == 2:
-                    message += f"   📦 {item['package']} - SIM 2 THÁNG (NHẮC TRƯỚC 30 NGÀY)\n"
-                else:
-                    message += f"   📦 {item['package']}\n"
-                message += "\n"
+                message += f"   📦 {item['package']} - {item['sim_type']}\n\n"
         
         # 4. KHÔNG CÓ VIỆC
         if not overdue and not today_due and not upcoming_7days:
             message += "✅ Hôm nay không có công việc cần xử lý.\n"
             message += "\n💡 Lưu ý:\n"
-            message += "   - Sim 2 tháng (363*2): nhắc trước 30 ngày\n"
-            message += "   - Sim 3 tháng (363*3, 360*3): nhắc trước 7 ngày\n"
-            message += "   - Quá hạn: sẽ hiển thị ở mục QUÁ HẠN\n"
+            message += "   - Sim 2 tháng (363*2): thời gian sử dụng 60 ngày (đã điều chỉnh)\n"
+            message += "   - Sim 3 tháng (363*3, 360*3): thời gian sử dụng 90 ngày\n"
         
-        # Gửi tin nhắn
         send_telegram_message(message)
         
         print(f"\n📊 KẾT QUẢ XỬ LÝ:")
